@@ -13,15 +13,17 @@ const { neon } = require('@neondatabase/serverless');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Initialize database connection
 const sql = neon(process.env.NEON_DATABASE_URL);
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://ailigner.netlify.app', 'https://ailigner-backend.onrender.com'],
+  credentials: true
+}));
 app.use(express.json());
 app.use('/uploads', express.static('uploads'));
 
-// Create uploads directory if it doesn't exist
+// Ensure uploads directory exists
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
@@ -32,7 +34,9 @@ const storage = multer.diskStorage({
     cb(null, 'uploads/');
   },
   filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
+    // Keep original extension
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);
   }
 });
 
@@ -68,7 +72,6 @@ const isAdmin = (req, res, next) => {
 
 const initializeDatabase = async () => {
   try {
-    // Create tables
     await sql`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -92,6 +95,9 @@ const initializeDatabase = async () => {
         user_id UUID REFERENCES users(id) ON DELETE CASCADE,
         task_text TEXT,
         voice_recording TEXT,
+        file_url TEXT,
+        user_file_url TEXT,
+        submission_type VARCHAR(20),
         status VARCHAR(20) DEFAULT 'in_progress',
         admin_message TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -147,7 +153,6 @@ const initializeDatabase = async () => {
 
     console.log('✅ Tables created successfully');
 
-    // Check if admin exists
     const adminExists = await sql`
       SELECT * FROM users WHERE email = 'admin@ailigner.com'
     `;
@@ -158,10 +163,9 @@ const initializeDatabase = async () => {
         INSERT INTO users (email, password, role, subscription_type)
         VALUES ('admin@ailigner.com', ${hashedPassword}, 'admin', 'admin')
       `;
-      console.log('✅ Admin user created (email: admin@ailigner.com, password: Admin123!)');
+      console.log('✅ Admin user created');
     }
 
-    // Check and create test subscription codes (only English and French)
     const codesExist = await sql`
       SELECT * FROM subscription_codes LIMIT 1
     `;
@@ -178,25 +182,7 @@ const initializeDatabase = async () => {
           VALUES (${testCode.code}, ${testCode.type}, false)
         `;
       }
-      console.log('✅ Test subscription codes created: ENG2024, FR2024');
-    }
-
-    // Create a test user
-    const testUserExists = await sql`
-      SELECT * FROM users WHERE email = 'test@example.com'
-    `;
-    
-    if (testUserExists.length === 0) {
-      const hashedPassword = await bcrypt.hash('Test123!', 10);
-      await sql`
-        INSERT INTO users (email, phone, gender, password, subscription_code, subscription_type, role, total_earned)
-        VALUES ('test@example.com', '+1234567890', 'male', ${hashedPassword}, 'ENG2024', 'english', 'user', 100.00)
-      `;
-      
-      await sql`
-        UPDATE subscription_codes SET is_used = true WHERE code = 'ENG2024'
-      `;
-      console.log('✅ Test user created (email: test@example.com, password: Test123!)');
+      console.log('✅ Test subscription codes created');
     }
 
     console.log('🎉 Database initialization complete!');
@@ -205,12 +191,14 @@ const initializeDatabase = async () => {
   }
 };
 
-// Initialize database on startup
 initializeDatabase();
 
 // ============= AUTH ROUTES =============
 
-// Login
+app.get('/', (req, res) => {
+  res.json({ message: 'AIligner Backend API is running!' });
+});
+
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -256,7 +244,6 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Signup
 app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
   try {
     const { email, phone, gender, password, subscription_code } = req.body;
@@ -304,12 +291,10 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
   }
 });
 
-// Generate subscription code (admin only) - Only English and French
 app.post('/api/generate-code', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { type } = req.body;
     
-    // Only allow English and French code generation
     if (type !== 'english' && type !== 'french') {
       return res.status(400).json({ error: 'Only English and French subscription codes can be generated' });
     }
@@ -328,7 +313,6 @@ app.post('/api/generate-code', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
-// Get subscription codes (admin only)
 app.get('/api/subscription-codes', authenticateToken, isAdmin, async (req, res) => {
   try {
     const codes = await sql`
@@ -375,7 +359,6 @@ app.get('/api/jobs', authenticateToken, async (req, res) => {
   }
 });
 
-// Apply for job (start exam)
 app.post('/api/apply-job', authenticateToken, async (req, res) => {
   try {
     const { jobType } = req.body;
@@ -424,14 +407,12 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
   }
 });
 
-// Submit exam - ALWAYS sets status to 'pending' for admin review
 app.post('/api/submit-exam', authenticateToken, async (req, res) => {
   try {
     const { examType, answers, recordings } = req.body;
     
-    // Always set status to 'pending' - admin must validate
     const status = 'pending';
-    const score = null; // No score until admin grades
+    const score = null;
     
     await sql`
       INSERT INTO exams (user_id, exam_type, answers, recording_files, status, score)
@@ -448,21 +429,6 @@ app.post('/api/submit-exam', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/api/exam-status/:type', authenticateToken, async (req, res) => {
-  try {
-    const exam = await sql`
-      SELECT * FROM exams WHERE user_id = ${req.user.id} AND exam_type = ${req.params.type}
-      ORDER BY created_at DESC LIMIT 1
-    `;
-    
-    res.json(exam[0] || null);
-  } catch (error) {
-    console.error('Exam status error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get all user exams (for user page)
 app.get('/api/my-exams', authenticateToken, async (req, res) => {
   try {
     const exams = await sql`
@@ -520,10 +486,10 @@ app.get('/api/tasks', authenticateToken, async (req, res) => {
 
 app.post('/api/admin/tasks', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { userId, taskText } = req.body;
+    const { userId, taskText, submissionType } = req.body;
     const task = await sql`
-      INSERT INTO tasks (user_id, task_text, status)
-      VALUES (${userId}, ${taskText}, 'in_progress')
+      INSERT INTO tasks (user_id, task_text, submission_type, status)
+      VALUES (${userId}, ${taskText}, ${submissionType}, 'in_progress')
       RETURNING *
     `;
     res.json(task[0]);
@@ -533,17 +499,47 @@ app.post('/api/admin/tasks', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/submit-task/:id', authenticateToken, upload.single('recording'), async (req, res) => {
+app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recording'), async (req, res) => {
   try {
     const recording = req.file ? `/uploads/${req.file.filename}` : null;
+    
     await sql`
       UPDATE tasks 
       SET voice_recording = ${recording}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
       WHERE id = ${req.params.id} AND user_id = ${req.user.id}
     `;
-    res.json({ message: 'Task submitted successfully' });
+    res.json({ message: 'Voice submitted successfully', recordingPath: recording });
   } catch (error) {
-    console.error('Submit task error:', error);
+    console.error('Submit voice error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    await sql`
+      UPDATE tasks 
+      SET user_file_url = ${fileUrl}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${req.params.id} AND user_id = ${req.user.id}
+    `;
+    res.json({ message: 'File submitted successfully', fileUrl });
+  } catch (error) {
+    console.error('Submit file error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
+  try {
+    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    await sql`
+      UPDATE tasks SET file_url = ${fileUrl}
+      WHERE id = ${req.params.id}
+    `;
+    res.json({ message: 'File uploaded successfully', fileUrl });
+  } catch (error) {
+    console.error('Admin upload file error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -601,26 +597,22 @@ app.delete('/api/admin/task/:id', authenticateToken, isAdmin, async (req, res) =
 
 // ============= WITHDRAWALS =============
 
-// Create withdrawal request - AUTOMATICALLY DEDUCTS BALANCE
 app.post('/api/withdraw', authenticateToken, async (req, res) => {
   try {
     const { amount, method, details } = req.body;
     
-    // Get user current balance
     const user = await sql`
-      SELECT total_earned, subscription_type FROM users WHERE id = ${req.user.id}
+      SELECT total_earned FROM users WHERE id = ${req.user.id}
     `;
     
     if (user.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    // Check if user has sufficient balance
     if (user[0].total_earned < amount) {
       return res.status(400).json({ error: 'Insufficient balance' });
     }
     
-    // Check if there's already a pending withdrawal
     const pendingWithdrawal = await sql`
       SELECT * FROM withdrawals WHERE user_id = ${req.user.id} AND status = 'pending'
     `;
@@ -629,14 +621,12 @@ app.post('/api/withdraw', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'You already have a pending withdrawal request' });
     }
     
-    // AUTOMATICALLY DEDUCT the amount from user's balance
     const newBalance = user[0].total_earned - amount;
     await sql`
       UPDATE users SET total_earned = ${newBalance}
       WHERE id = ${req.user.id}
     `;
     
-    // Create withdrawal record with 'pending' status
     const withdrawal = await sql`
       INSERT INTO withdrawals (user_id, amount, method, details, status)
       VALUES (${req.user.id}, ${amount}, ${method}, ${JSON.stringify(details)}, 'pending')
@@ -645,8 +635,7 @@ app.post('/api/withdraw', authenticateToken, async (req, res) => {
     
     res.json({ 
       withdrawal: withdrawal[0],
-      newBalance: newBalance,
-      message: `Withdrawal request submitted. Amount ${amount} has been deducted from your balance. If rejected, it will be refunded.`
+      newBalance: newBalance
     });
   } catch (error) {
     console.error('Withdrawal error:', error);
@@ -654,7 +643,6 @@ app.post('/api/withdraw', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user withdrawals
 app.get('/api/withdrawals', authenticateToken, async (req, res) => {
   try {
     const withdrawals = await sql`
@@ -667,7 +655,6 @@ app.get('/api/withdrawals', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all withdrawals (admin)
 app.get('/api/admin/withdrawals', authenticateToken, isAdmin, async (req, res) => {
   try {
     const withdrawals = await sql`
@@ -683,14 +670,10 @@ app.get('/api/admin/withdrawals', authenticateToken, isAdmin, async (req, res) =
   }
 });
 
-// Approve/reject withdrawal (admin)
-// If approved: keep the deduction (do nothing, money already deducted)
-// If rejected: REFUND the amount back to user
 app.put('/api/admin/withdrawal/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { status } = req.body;
     
-    // Get withdrawal details
     const withdrawal = await sql`SELECT * FROM withdrawals WHERE id = ${req.params.id}`;
     
     if (withdrawal.length === 0) {
@@ -698,25 +681,18 @@ app.put('/api/admin/withdrawal/:id', authenticateToken, isAdmin, async (req, res
     }
     
     if (status === 'rejected') {
-      // REFUND the amount back to user's balance
       await sql`
         UPDATE users SET total_earned = total_earned + ${withdrawal[0].amount}
         WHERE id = ${withdrawal[0].user_id}
       `;
     }
-    // If approved: do nothing - money is already deducted when withdrawal was requested
     
-    // Update withdrawal status
     await sql`
       UPDATE withdrawals SET status = ${status}
       WHERE id = ${req.params.id}
     `;
     
-    const message = status === 'approved' 
-      ? 'Withdrawal approved. Money has been sent to user.'
-      : 'Withdrawal rejected. Amount has been refunded to user balance.';
-    
-    res.json({ message: message });
+    res.json({ message: 'Withdrawal updated' });
   } catch (error) {
     console.error('Update withdrawal error:', error);
     res.status(500).json({ error: error.message });
@@ -803,24 +779,13 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Send money to user (admin)
 app.post('/api/admin/send-money', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { userId, amount } = req.body;
-    
-    const user = await sql`
-      SELECT subscription_type FROM users WHERE id = ${userId}
-    `;
-    
-    if (user.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
     await sql`
       UPDATE users SET total_earned = total_earned + ${amount}
       WHERE id = ${userId}
     `;
-    
     res.json({ message: `Successfully sent ${amount} to user` });
   } catch (error) {
     console.error('Send money error:', error);
@@ -832,7 +797,5 @@ app.post('/api/admin/send-money', authenticateToken, isAdmin, async (req, res) =
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📱 Frontend should run on http://localhost:3000`);
   console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
-  console.log(`👤 Test user: test@example.com / Test123!`);
 });
