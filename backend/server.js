@@ -33,7 +33,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Keep uploads directory for temporary storage (Cloudinary will handle permanent storage)
+// Keep uploads directory for temporary storage
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
@@ -52,7 +52,8 @@ const uploadToCloudinary = (buffer, options) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         ...options,
-        access_mode: 'public' // CRITICAL: Makes files publicly accessible
+        access_mode: 'public', // CRITICAL: Forces files to be publicly accessible
+        type: 'upload'
       },
       (error, result) => {
         if (error) reject(error);
@@ -588,7 +589,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// FIXED: Admin upload with PUBLIC access
+// ============= ADMIN TASK FILE UPLOAD (PUBLIC) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -598,7 +599,6 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
       resource_type: 'auto'
-      // access_mode: 'public' is set in the helper function
     });
     
     await sql`
@@ -879,5 +879,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary configured - files will be stored permanently (PUBLIC access)`);
+  console.log(`☁️ Cloudinary configured - ALL UPLOADS WILL BE PUBLIC`);
 });
