@@ -69,12 +69,26 @@ const getResourceType = (filename, mimetype) => {
   const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
   const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
   
-  // Check if it's an image
   if (imageExtensions.includes(ext) || mimetype.startsWith('image/')) {
     return 'image';
   }
-  // Everything else (PDF, DOC, etc.) is raw
   return 'raw';
+};
+
+// ============= HELPER: Sanitize filename for Cloudinary (PRESERVES EXTENSION) =============
+const sanitizePublicId = (filename) => {
+  // Split filename and extension
+  const lastDotIndex = filename.lastIndexOf('.');
+  const name = lastDotIndex > 0 ? filename.substring(0, lastDotIndex) : filename;
+  const ext = lastDotIndex > 0 ? filename.substring(lastDotIndex) : '';
+  
+  // Sanitize the name part only (keep extension)
+  const sanitizedName = name
+    .replace(/[^a-zA-Z0-9_\-]/g, '_')
+    .replace(/_+/g, '_')
+    .substring(0, 50);
+  
+  return sanitizedName + ext;
 };
 
 // ============= AUTHENTICATION MIDDLEWARE =============
@@ -453,7 +467,7 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_exam_recordings',
-      resource_type: 'video' // Audio files work with video resource type
+      resource_type: 'video'
     });
     
     console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
@@ -585,13 +599,14 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
-    // Determine resource type based on file
     const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
+    const safePublicId = sanitizePublicId(req.file.originalname);
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_task_files',
       resource_type: resourceType,
-      use_filename: true,
+      public_id: safePublicId,
+      use_filename: false,
       unique_filename: false
     });
     
@@ -607,26 +622,27 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN TASK FILE UPLOAD (FIXED PDF) =============
+// ============= ADMIN TASK FILE UPLOAD (FIXED - PRESERVES EXTENSION) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
-    // Determine resource type based on file
     const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
+    const safePublicId = sanitizePublicId(req.file.originalname);
     
-    console.log('📁 Uploading file:', req.file.originalname);
+    console.log('📁 Original filename:', req.file.originalname);
+    console.log('📁 Sanitized public_id:', safePublicId);
     console.log('📁 Resource type:', resourceType);
     console.log('📁 MIME type:', req.file.mimetype);
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
       resource_type: resourceType,
-      use_filename: true,
-      unique_filename: false,
-      public_id: req.file.originalname.split('.')[0] // Use original filename without extension
+      public_id: safePublicId,
+      use_filename: false,
+      unique_filename: false
     });
     
     await sql`
