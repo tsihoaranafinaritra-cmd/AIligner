@@ -44,13 +44,14 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= HELPER: Upload to Cloudinary =============
+// ============= HELPER: Upload to Cloudinary (FORCES PUBLIC) =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
     const uploadOptions = {
       ...options,
-      access_mode: 'public',
-      type: 'upload'
+      access_mode: 'public', // FORCES PUBLIC ACCESS
+      type: 'upload',
+      discard_original_filename: false
     };
     
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -75,14 +76,12 @@ const getResourceType = (filename, mimetype) => {
   return 'raw';
 };
 
-// ============= HELPER: Sanitize filename for Cloudinary (PRESERVES EXTENSION) =============
+// ============= HELPER: Sanitize filename for Cloudinary =============
 const sanitizePublicId = (filename) => {
-  // Split filename and extension
   const lastDotIndex = filename.lastIndexOf('.');
   const name = lastDotIndex > 0 ? filename.substring(0, lastDotIndex) : filename;
   const ext = lastDotIndex > 0 ? filename.substring(lastDotIndex) : '';
   
-  // Sanitize the name part only (keep extension)
   const sanitizedName = name
     .replace(/[^a-zA-Z0-9_\-]/g, '_')
     .replace(/_+/g, '_')
@@ -467,7 +466,8 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_exam_recordings',
-      resource_type: 'video'
+      resource_type: 'video',
+      access_mode: 'public'
     });
     
     console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
@@ -578,7 +578,8 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_task_recordings',
-      resource_type: 'video'
+      resource_type: 'video',
+      access_mode: 'public'
     });
     
     await sql`
@@ -606,6 +607,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       folder: 'ailigner_task_files',
       resource_type: resourceType,
       public_id: safePublicId,
+      access_mode: 'public',
       use_filename: false,
       unique_filename: false
     });
@@ -622,7 +624,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN TASK FILE UPLOAD (FIXED - PRESERVES EXTENSION) =============
+// ============= ADMIN TASK FILE UPLOAD (FIXED PDF - PUBLIC) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -632,7 +634,7 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
     const safePublicId = sanitizePublicId(req.file.originalname);
     
-    console.log('📁 Original filename:', req.file.originalname);
+    console.log('📁 Uploading file:', req.file.originalname);
     console.log('📁 Sanitized public_id:', safePublicId);
     console.log('📁 Resource type:', resourceType);
     console.log('📁 MIME type:', req.file.mimetype);
@@ -641,6 +643,7 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
       folder: 'ailigner_admin_files',
       resource_type: resourceType,
       public_id: safePublicId,
+      access_mode: 'public',
       use_filename: false,
       unique_filename: false
     });
