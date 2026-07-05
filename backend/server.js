@@ -15,16 +15,18 @@ const { neon } = require('@neondatabase/serverless');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// ============= CLOUDINARY CONFIGURATION =============
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-console.log('☁️ Cloudinary configured');
+console.log('☁️ Cloudinary configured successfully!');
 
 const sql = neon(process.env.NEON_DATABASE_URL);
 
+// ============= MIDDLEWARE =============
 app.use(cors({
   origin: ['http://localhost:3000', 'https://ailigner.netlify.app', 'https://*.netlify.app', 'https://ailigner-backend.onrender.com'],
   credentials: true
@@ -36,22 +38,29 @@ if (!fs.existsSync('uploads')) {
 }
 
 const storage = multer.memoryStorage();
+
 const upload = multer({ 
   storage,
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= UPLOAD TO CLOUDINARY =============
-// CRITICAL: For PDFs, use resource_type: 'image' (not 'raw')
-// This makes access_mode: 'public' work on free tier
+// ============= HELPER: Upload to Cloudinary (PDF SUPPORT) =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
+    // Check if this is a PDF or raw file
+    const isRaw = options.resource_type === 'raw' || 
+                  options.folder === 'ailigner_admin_files' ||
+                  options.folder === 'ailigner_task_files';
+    
+    const uploadOptions = {
+      ...options,
+      access_mode: 'public',
+      type: 'upload',
+      resource_type: isRaw ? 'raw' : 'auto'
+    };
+    
     const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        ...options,
-        access_mode: 'public',
-        resource_type: options.resource_type || 'auto'
-      },
+      uploadOptions,
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
@@ -61,43 +70,29 @@ const uploadToCloudinary = (buffer, options) => {
   });
 };
 
-// ============= DETECT FILE TYPE =============
-const getResourceType = (filename, mimetype) => {
-  const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
-  const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
-  
-  if (imageExts.includes(ext) || mimetype.startsWith('image/')) {
-    return 'image';
-  }
-  
-  // PDFs are uploaded as 'image' to make public access work on free tier
-  return 'image'; // <-- THIS IS THE FIX
-};
-
-// ============= CLEAN FILENAME =============
-const cleanFileName = (filename) => {
-  const lastDot = filename.lastIndexOf('.');
-  const name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
-  const ext = lastDot > 0 ? filename.substring(lastDot) : '';
-  const clean = name.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_').substring(0, 50);
-  return clean + ext;
-};
-
-// ============= AUTH MIDDLEWARE =============
+// ============= AUTHENTICATION MIDDLEWARE =============
 
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'Access token required' });
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
     req.user = user;
     next();
   });
 };
 
 const isAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
   next();
 };
 
@@ -184,7 +179,7 @@ const initializeDatabase = async () => {
       )
     `;
 
-    console.log('✅ Tables created');
+    console.log('✅ Tables created successfully');
 
     const adminExists = await sql`
       SELECT * FROM users WHERE email = 'admin@ailigner.com'
@@ -196,7 +191,7 @@ const initializeDatabase = async () => {
         INSERT INTO users (email, password, role, subscription_type)
         VALUES ('admin@ailigner.com', ${hashedPassword}, 'admin', 'admin')
       `;
-      console.log('✅ Admin created');
+      console.log('✅ Admin user created');
     }
 
     const codesExist = await sql`
@@ -204,20 +199,29 @@ const initializeDatabase = async () => {
     `;
     
     if (codesExist.length === 0) {
-      await sql`
-        INSERT INTO subscription_codes (code, type, is_used)
-        VALUES ('ENG2024', 'english', false), ('FR2024', 'french', false)
-      `;
-      console.log('✅ Test codes created');
+      const testCodes = [
+        { code: 'ENG2024', type: 'english' },
+        { code: 'FR2024', type: 'french' }
+      ];
+      
+      for (const testCode of testCodes) {
+        await sql`
+          INSERT INTO subscription_codes (code, type, is_used)
+          VALUES (${testCode.code}, ${testCode.type}, false)
+        `;
+      }
+      console.log('✅ Test subscription codes created');
     }
 
-    console.log('🎉 Database ready');
+    console.log('🎉 Database initialization complete!');
   } catch (error) {
-    console.error('DB error:', error);
+    console.error('❌ Database initialization error:', error);
   }
 };
 
 initializeDatabase();
+
+// ============= AUTH ROUTES =============
 
 app.get('/', (req, res) => {
   res.json({ message: 'AIligner Backend API is running!' });
@@ -277,12 +281,11 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
     if (req.file) {
       try {
         const result = await uploadToCloudinary(req.file.buffer, {
-          folder: 'ailigner_passports',
-          resource_type: 'image'
+          folder: 'ailigner_passports'
         });
         passport_photo_url = result.secure_url;
       } catch (err) {
-        console.error('Cloudinary error:', err);
+        console.error('Cloudinary upload error:', err);
       }
     }
     
@@ -362,6 +365,8 @@ app.get('/api/subscription-codes', authenticateToken, isAdmin, async (req, res) 
   }
 });
 
+// ============= JOB LISTINGS =============
+
 const jobListings = {
   english: {
     title: "English Voice AI Trainer",
@@ -430,6 +435,8 @@ app.post('/api/apply-job', authenticateToken, async (req, res) => {
   }
 });
 
+// ============= EXAMS =============
+
 app.post('/api/upload-recording', authenticateToken, upload.single('recording'), async (req, res) => {
   try {
     if (!req.file) {
@@ -437,10 +444,10 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_exam_recordings',
-      resource_type: 'video'
+      folder: 'ailigner_exam_recordings'
     });
     
+    console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
     res.json({ url: result.secure_url });
   } catch (error) {
     console.error('Upload recording error:', error);
@@ -462,7 +469,7 @@ app.post('/api/submit-exam', authenticateToken, async (req, res) => {
     
     res.json({ 
       status: 'pending',
-      message: 'Exam submitted! Waiting for admin validation.'
+      message: 'Exam submitted successfully! Waiting for admin validation.'
     });
   } catch (error) {
     console.error('Submit exam error:', error);
@@ -504,12 +511,14 @@ app.put('/api/admin/grade-exam/:id', authenticateToken, isAdmin, async (req, res
       UPDATE exams SET status = ${status}, score = ${score}
       WHERE id = ${req.params.id}
     `;
-    res.json({ message: 'Exam graded' });
+    res.json({ message: 'Exam graded successfully' });
   } catch (error) {
     console.error('Grade exam error:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============= TASKS =============
 
 app.get('/api/tasks', authenticateToken, async (req, res) => {
   try {
@@ -545,8 +554,7 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_task_recordings',
-      resource_type: 'video'
+      folder: 'ailigner_task_recordings'
     });
     
     await sql`
@@ -554,7 +562,7 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
       SET voice_recording = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
       WHERE id = ${req.params.id} AND user_id = ${req.user.id}
     `;
-    res.json({ message: 'Voice submitted', recordingPath: result.secure_url });
+    res.json({ message: 'Voice submitted successfully', recordingPath: result.secure_url });
   } catch (error) {
     console.error('Submit voice error:', error);
     res.status(500).json({ error: error.message });
@@ -567,15 +575,8 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
-    const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
-    const cleanId = cleanFileName(req.file.originalname);
-    
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_task_files',
-      resource_type: resourceType,
-      public_id: cleanId,
-      use_filename: false,
-      unique_filename: false
+      folder: 'ailigner_task_files'
     });
     
     await sql`
@@ -583,37 +584,31 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       SET user_file_url = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
       WHERE id = ${req.params.id} AND user_id = ${req.user.id}
     `;
-    res.json({ message: 'File submitted', fileUrl: result.secure_url });
+    res.json({ message: 'File submitted successfully', fileUrl: result.secure_url });
   } catch (error) {
     console.error('Submit file error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ============= ADMIN FILE UPLOAD - THE FIX =============
+// ============= ADMIN TASK FILE UPLOAD (PDF SUPPORT) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
-    // CRITICAL FIX: PDFs uploaded as 'image' so public access works
-    const resourceType = 'image'; // Force all files to upload as image
-    const cleanId = cleanFileName(req.file.originalname);
-    
-    console.log('📁 Uploading:', req.file.originalname);
-    console.log('📁 Resource type:', resourceType);
-    console.log('📁 Clean ID:', cleanId);
+    // Check if it's a PDF or other document
+    const isPdf = req.file.mimetype === 'application/pdf' || 
+                  req.file.originalname.endsWith('.pdf') ||
+                  req.file.originalname.endsWith('.doc') ||
+                  req.file.originalname.endsWith('.docx') ||
+                  req.file.originalname.endsWith('.txt');
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
-      resource_type: resourceType,
-      public_id: cleanId,
-      use_filename: false,
-      unique_filename: false
+      resource_type: isPdf ? 'raw' : 'auto'
     });
-    
-    console.log('✅ Uploaded to:', result.secure_url);
     
     await sql`
       UPDATE tasks SET file_url = ${result.secure_url}
@@ -621,7 +616,7 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     `;
     res.json({ message: 'File uploaded successfully', fileUrl: result.secure_url });
   } catch (error) {
-    console.error('Admin upload error:', error);
+    console.error('Admin upload file error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -676,6 +671,8 @@ app.delete('/api/admin/task/:id', authenticateToken, isAdmin, async (req, res) =
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============= WITHDRAWALS =============
 
 app.post('/api/withdraw', authenticateToken, async (req, res) => {
   try {
@@ -779,6 +776,8 @@ app.put('/api/admin/withdrawal/:id', authenticateToken, isAdmin, async (req, res
   }
 });
 
+// ============= MESSAGES =============
+
 app.post('/api/admin/message', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { userId, message } = req.body;
@@ -814,6 +813,8 @@ app.delete('/api/admin/message/:id', authenticateToken, isAdmin, async (req, res
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============= USER MANAGEMENT =============
 
 app.get('/api/admin/users', authenticateToken, isAdmin, async (req, res) => {
   try {
@@ -869,10 +870,12 @@ app.post('/api/admin/send-money', authenticateToken, isAdmin, async (req, res) =
   }
 });
 
+// ============= KEEP-ALIVE =============
+
 const keepAlive = async () => {
   try {
     const response = await fetch(`http://localhost:${PORT}/api/jobs`);
-    console.log('Keep-alive ping:', new Date().toISOString());
+    console.log('🔄 Keep-alive ping at:', new Date().toISOString(), 'Status:', response.status);
   } catch (err) {
     console.log('Keep-alive error:', err.message);
   }
@@ -880,8 +883,10 @@ const keepAlive = async () => {
 
 setInterval(keepAlive, 240000);
 
+// ============= START SERVER =============
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🔐 Admin: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary - PDFs uploaded as image (public access works)`);
+  console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
+  console.log(`☁️ Cloudinary configured - PDFs and images supported (PUBLIC access)`);
 });
