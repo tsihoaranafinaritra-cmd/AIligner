@@ -6,6 +6,8 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const fs = require('fs');
+const streamifier = require('streamifier');
+const cloudinary = require('cloudinary').v2;
 require('dotenv').config();
 
 const { neon } = require('@neondatabase/serverless');
@@ -13,34 +15,50 @@ const { neon } = require('@neondatabase/serverless');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// ============= CLOUDINARY CONFIGURATION =============
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+console.log('☁️ Cloudinary configured successfully!');
+
 const sql = neon(process.env.NEON_DATABASE_URL);
 
-// Middleware
+// ============= MIDDLEWARE =============
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://ailigner.netlify.app', 'https://ailigner-backend.onrender.com'],
+  origin: ['http://localhost:3000', 'https://ailigner.netlify.app', 'https://*.netlify.app', 'https://ailigner-backend.onrender.com'],
   credentials: true
 }));
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
 
-// Ensure uploads directory exists
+// Keep uploads directory for temporary storage (Cloudinary will handle permanent storage)
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    // Keep original extension
-    const ext = path.extname(file.originalname);
-    cb(null, `${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);
-  }
+// Configure multer for memory storage (files go to Cloudinary directly)
+const storage = multer.memoryStorage();
+
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
-const upload = multer({ storage });
+// ============= HELPER: Upload to Cloudinary =============
+const uploadToCloudinary = (buffer, options) => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      options,
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+    streamifier.createReadStream(buffer).pipe(uploadStream);
+  });
+};
 
 // ============= AUTHENTICATION MIDDLEWARE =============
 
@@ -247,7 +265,20 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
   try {
     const { email, phone, gender, password, subscription_code } = req.body;
-    const passport_photo = req.file ? `/uploads/${req.file.filename}` : null;
+    
+    let passport_photo_url = null;
+    
+    if (req.file) {
+      try {
+        const result = await uploadToCloudinary(req.file.buffer, {
+          folder: 'ailigner_passports',
+          resource_type: 'image'
+        });
+        passport_photo_url = result.secure_url;
+      } catch (err) {
+        console.error('Cloudinary upload error:', err);
+      }
+    }
     
     const existingUser = await sql`
       SELECT * FROM users WHERE email = ${email}
@@ -270,7 +301,7 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
     
     const users = await sql`
       INSERT INTO users (email, phone, gender, password, passport_photo, subscription_code, subscription_type)
-      VALUES (${email}, ${phone}, ${gender}, ${hashedPassword}, ${passport_photo}, ${subscription_code}, ${code.type})
+      VALUES (${email}, ${phone}, ${gender}, ${hashedPassword}, ${passport_photo_url}, ${subscription_code}, ${code.type})
       RETURNING id, email, role, subscription_type
     `;
     
@@ -399,8 +430,17 @@ app.post('/api/apply-job', authenticateToken, async (req, res) => {
 
 app.post('/api/upload-recording', authenticateToken, upload.single('recording'), async (req, res) => {
   try {
-    const recordingUrl = req.file ? `/uploads/${req.file.filename}` : null;
-    res.json({ url: recordingUrl });
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const result = await uploadToCloudinary(req.file.buffer, {
+      folder: 'ailigner_exam_recordings',
+      resource_type: 'auto'
+    });
+    
+    console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
+    res.json({ url: result.secure_url });
   } catch (error) {
     console.error('Upload recording error:', error);
     res.status(500).json({ error: error.message });
@@ -486,10 +526,10 @@ app.get('/api/tasks', authenticateToken, async (req, res) => {
 
 app.post('/api/admin/tasks', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { userId, taskText, submissionType } = req.body;
+    const { userId, taskText, submissionType, adminMessage } = req.body;
     const task = await sql`
-      INSERT INTO tasks (user_id, task_text, submission_type, status)
-      VALUES (${userId}, ${taskText}, ${submissionType}, 'in_progress')
+      INSERT INTO tasks (user_id, task_text, submission_type, admin_message, status)
+      VALUES (${userId}, ${taskText}, ${submissionType}, ${adminMessage || null}, 'in_progress')
       RETURNING *
     `;
     res.json(task[0]);
@@ -501,14 +541,21 @@ app.post('/api/admin/tasks', authenticateToken, isAdmin, async (req, res) => {
 
 app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recording'), async (req, res) => {
   try {
-    const recording = req.file ? `/uploads/${req.file.filename}` : null;
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const result = await uploadToCloudinary(req.file.buffer, {
+      folder: 'ailigner_task_recordings',
+      resource_type: 'auto'
+    });
     
     await sql`
       UPDATE tasks 
-      SET voice_recording = ${recording}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
+      SET voice_recording = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
       WHERE id = ${req.params.id} AND user_id = ${req.user.id}
     `;
-    res.json({ message: 'Voice submitted successfully', recordingPath: recording });
+    res.json({ message: 'Voice submitted successfully', recordingPath: result.secure_url });
   } catch (error) {
     console.error('Submit voice error:', error);
     res.status(500).json({ error: error.message });
@@ -517,13 +564,21 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
 
 app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), async (req, res) => {
   try {
-    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const result = await uploadToCloudinary(req.file.buffer, {
+      folder: 'ailigner_task_files',
+      resource_type: 'auto'
+    });
+    
     await sql`
       UPDATE tasks 
-      SET user_file_url = ${fileUrl}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
+      SET user_file_url = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
       WHERE id = ${req.params.id} AND user_id = ${req.user.id}
     `;
-    res.json({ message: 'File submitted successfully', fileUrl });
+    res.json({ message: 'File submitted successfully', fileUrl: result.secure_url });
   } catch (error) {
     console.error('Submit file error:', error);
     res.status(500).json({ error: error.message });
@@ -532,12 +587,20 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
 
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
-    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const result = await uploadToCloudinary(req.file.buffer, {
+      folder: 'ailigner_admin_files',
+      resource_type: 'auto'
+    });
+    
     await sql`
-      UPDATE tasks SET file_url = ${fileUrl}
+      UPDATE tasks SET file_url = ${result.secure_url}
       WHERE id = ${req.params.id}
     `;
-    res.json({ message: 'File uploaded successfully', fileUrl });
+    res.json({ message: 'File uploaded successfully', fileUrl: result.secure_url });
   } catch (error) {
     console.error('Admin upload file error:', error);
     res.status(500).json({ error: error.message });
@@ -793,9 +856,23 @@ app.post('/api/admin/send-money', authenticateToken, isAdmin, async (req, res) =
   }
 });
 
+// ============= KEEP-ALIVE =============
+
+const keepAlive = async () => {
+  try {
+    const response = await fetch(`http://localhost:${PORT}/api/jobs`);
+    console.log('🔄 Keep-alive ping at:', new Date().toISOString(), 'Status:', response.status);
+  } catch (err) {
+    console.log('Keep-alive error:', err.message);
+  }
+};
+
+setInterval(keepAlive, 240000);
+
 // ============= START SERVER =============
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
+  console.log(`☁️ Cloudinary configured - files will be stored permanently`);
 });
