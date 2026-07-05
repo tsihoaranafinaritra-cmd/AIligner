@@ -46,11 +46,14 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
-// ============= HELPER: Upload to Cloudinary =============
+// ============= HELPER: Upload to Cloudinary (PUBLIC BY DEFAULT) =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
-      options,
+      {
+        ...options,
+        access_mode: 'public' // CRITICAL: Makes files publicly accessible
+      },
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
@@ -585,6 +588,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
+// FIXED: Admin upload with PUBLIC access
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -594,6 +598,7 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
       resource_type: 'auto'
+      // access_mode: 'public' is set in the helper function
     });
     
     await sql`
@@ -874,5 +879,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary configured - files will be stored permanently`);
+  console.log(`☁️ Cloudinary configured - files will be stored permanently (PUBLIC access)`);
 });
