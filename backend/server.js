@@ -44,19 +44,13 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= HELPER: Upload to Cloudinary (PDF SUPPORT) =============
+// ============= HELPER: Upload to Cloudinary =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
-    // Check if this is a PDF or raw file
-    const isRaw = options.resource_type === 'raw' || 
-                  options.folder === 'ailigner_admin_files' ||
-                  options.folder === 'ailigner_task_files';
-    
     const uploadOptions = {
       ...options,
       access_mode: 'public',
-      type: 'upload',
-      resource_type: isRaw ? 'raw' : 'auto'
+      type: 'upload'
     };
     
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -68,6 +62,19 @@ const uploadToCloudinary = (buffer, options) => {
     );
     streamifier.createReadStream(buffer).pipe(uploadStream);
   });
+};
+
+// ============= HELPER: Determine resource type =============
+const getResourceType = (filename, mimetype) => {
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
+  const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+  
+  // Check if it's an image
+  if (imageExtensions.includes(ext) || mimetype.startsWith('image/')) {
+    return 'image';
+  }
+  // Everything else (PDF, DOC, etc.) is raw
+  return 'raw';
 };
 
 // ============= AUTHENTICATION MIDDLEWARE =============
@@ -281,7 +288,8 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
     if (req.file) {
       try {
         const result = await uploadToCloudinary(req.file.buffer, {
-          folder: 'ailigner_passports'
+          folder: 'ailigner_passports',
+          resource_type: 'image'
         });
         passport_photo_url = result.secure_url;
       } catch (err) {
@@ -444,7 +452,8 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_exam_recordings'
+      folder: 'ailigner_exam_recordings',
+      resource_type: 'video' // Audio files work with video resource type
     });
     
     console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
@@ -554,7 +563,8 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_task_recordings'
+      folder: 'ailigner_task_recordings',
+      resource_type: 'video'
     });
     
     await sql`
@@ -575,8 +585,14 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
+    // Determine resource type based on file
+    const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
+    
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_task_files'
+      folder: 'ailigner_task_files',
+      resource_type: resourceType,
+      use_filename: true,
+      unique_filename: false
     });
     
     await sql`
@@ -591,23 +607,26 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN TASK FILE UPLOAD (PDF SUPPORT) =============
+// ============= ADMIN TASK FILE UPLOAD (FIXED PDF) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
-    // Check if it's a PDF or other document
-    const isPdf = req.file.mimetype === 'application/pdf' || 
-                  req.file.originalname.endsWith('.pdf') ||
-                  req.file.originalname.endsWith('.doc') ||
-                  req.file.originalname.endsWith('.docx') ||
-                  req.file.originalname.endsWith('.txt');
+    // Determine resource type based on file
+    const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
+    
+    console.log('📁 Uploading file:', req.file.originalname);
+    console.log('📁 Resource type:', resourceType);
+    console.log('📁 MIME type:', req.file.mimetype);
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
-      resource_type: isPdf ? 'raw' : 'auto'
+      resource_type: resourceType,
+      use_filename: true,
+      unique_filename: false,
+      public_id: req.file.originalname.split('.')[0] // Use original filename without extension
     });
     
     await sql`
