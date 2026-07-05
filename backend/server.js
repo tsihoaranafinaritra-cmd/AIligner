@@ -44,18 +44,16 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= HELPER: Upload to Cloudinary (FORCES PUBLIC) =============
+// ============= HELPER: Upload to Cloudinary (PUBLIC BY DEFAULT) =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
-    const uploadOptions = {
-      ...options,
-      access_mode: 'public', // FORCES PUBLIC ACCESS
-      type: 'upload',
-      discard_original_filename: false
-    };
-    
     const uploadStream = cloudinary.uploader.upload_stream(
-      uploadOptions,
+      {
+        ...options,
+        access_mode: 'public', // CRITICAL: Forces files to be publicly accessible
+        type: 'upload',
+        discard_original_filename: false
+      },
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
@@ -466,8 +464,7 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_exam_recordings',
-      resource_type: 'video',
-      access_mode: 'public'
+      resource_type: 'video'
     });
     
     console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
@@ -578,8 +575,7 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_task_recordings',
-      resource_type: 'video',
-      access_mode: 'public'
+      resource_type: 'video'
     });
     
     await sql`
@@ -607,7 +603,6 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       folder: 'ailigner_task_files',
       resource_type: resourceType,
       public_id: safePublicId,
-      access_mode: 'public',
       use_filename: false,
       unique_filename: false
     });
@@ -624,7 +619,6 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN TASK FILE UPLOAD (FIXED PDF - PUBLIC) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -635,15 +629,13 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     const safePublicId = sanitizePublicId(req.file.originalname);
     
     console.log('📁 Uploading file:', req.file.originalname);
-    console.log('📁 Sanitized public_id:', safePublicId);
     console.log('📁 Resource type:', resourceType);
-    console.log('📁 MIME type:', req.file.mimetype);
+    console.log('📁 Public ID:', safePublicId);
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
       resource_type: resourceType,
       public_id: safePublicId,
-      access_mode: 'public',
       use_filename: false,
       unique_filename: false
     });
@@ -926,5 +918,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary configured - PDFs and images supported (PUBLIC access)`);
+  console.log(`☁️ Cloudinary configured - ALL UPLOADS WILL BE PUBLIC`);
 });
