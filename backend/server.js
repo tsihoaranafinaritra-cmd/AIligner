@@ -33,30 +33,34 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Keep uploads directory for temporary storage
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
 
-// Configure multer for memory storage (files go to Cloudinary directly)
 const storage = multer.memoryStorage();
 
 const upload = multer({ 
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= HELPER: Upload to Cloudinary (PUBLIC BY DEFAULT) =============
+// ============= HELPER: Upload to Cloudinary (PDF SUPPORT) =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
+    // Check if this is a PDF or raw file
+    const isRaw = options.resource_type === 'raw' || 
+                  options.folder === 'ailigner_admin_files' ||
+                  options.folder === 'ailigner_task_files';
+    
+    const uploadOptions = {
+      ...options,
+      access_mode: 'public',
+      type: 'upload',
+      resource_type: isRaw ? 'raw' : 'auto'
+    };
+    
     const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        ...options,
-        access_mode: 'public', // CRITICAL: Forces files to be publicly accessible
-        type: 'upload',
-        resource_type: 'auto',
-        folder: options.folder || 'ailigner_uploads'
-      },
+      uploadOptions,
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
@@ -587,15 +591,23 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN TASK FILE UPLOAD (PUBLIC) =============
+// ============= ADMIN TASK FILE UPLOAD (PDF SUPPORT) =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
+    // Check if it's a PDF or other document
+    const isPdf = req.file.mimetype === 'application/pdf' || 
+                  req.file.originalname.endsWith('.pdf') ||
+                  req.file.originalname.endsWith('.doc') ||
+                  req.file.originalname.endsWith('.docx') ||
+                  req.file.originalname.endsWith('.txt');
+    
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_admin_files'
+      folder: 'ailigner_admin_files',
+      resource_type: isPdf ? 'raw' : 'auto'
     });
     
     await sql`
@@ -876,5 +888,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin login: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary configured - ALL UPLOADS WILL BE PUBLIC`);
+  console.log(`☁️ Cloudinary configured - PDFs and images supported (PUBLIC access)`);
 });
