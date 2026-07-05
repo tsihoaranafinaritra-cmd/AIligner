@@ -41,13 +41,14 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= UPLOAD TO CLOUDINARY AND MAKE PUBLIC =============
+// ============= UPLOAD TO CLOUDINARY =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         ...options,
-        resource_type: options.resource_type || 'auto'
+        resource_type: options.resource_type || 'auto',
+        access_mode: 'public'
       },
       (error, result) => {
         if (error) reject(error);
@@ -58,37 +59,26 @@ const uploadToCloudinary = (buffer, options) => {
   });
 };
 
-// ============= MAKE FILE PUBLIC =============
-const makePublic = async (publicId, resourceType) => {
-  try {
-    const result = await cloudinary.api.update(publicId, {
-      access_mode: 'public',
-      resource_type: resourceType || 'image'
-    });
-    console.log('✅ Made public:', publicId);
-    return result;
-  } catch (error) {
-    console.log('⚠️ Error making public:', error.message);
-    return null;
-  }
-};
-
+// ============= DETECT FILE TYPE =============
 const getResourceType = (filename, mimetype) => {
-  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
   const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
-  if (imageExtensions.includes(ext) || mimetype.startsWith('image/')) {
+  const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
+  if (imageExts.includes(ext) || mimetype.startsWith('image/')) {
     return 'image';
   }
   return 'raw';
 };
 
-const sanitizePublicId = (filename) => {
-  const lastDotIndex = filename.lastIndexOf('.');
-  const name = lastDotIndex > 0 ? filename.substring(0, lastDotIndex) : filename;
-  const ext = lastDotIndex > 0 ? filename.substring(lastDotIndex) : '';
-  const sanitizedName = name.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_').substring(0, 50);
-  return sanitizedName + ext;
+// ============= CLEAN FILENAME =============
+const cleanFileName = (filename) => {
+  const lastDot = filename.lastIndexOf('.');
+  const name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+  const ext = lastDot > 0 ? filename.substring(lastDot) : '';
+  const clean = name.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_').substring(0, 50);
+  return clean + ext;
 };
+
+// ============= AUTH MIDDLEWARE =============
 
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -105,6 +95,8 @@ const isAdmin = (req, res, next) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
   next();
 };
+
+// ============= DATABASE SETUP =============
 
 const initializeDatabase = async () => {
   try {
@@ -284,10 +276,6 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
           resource_type: 'image'
         });
         passport_photo_url = result.secure_url;
-        
-        // Make public after upload
-        const publicId = result.public_id;
-        await makePublic(publicId, 'image');
       } catch (err) {
         console.error('Cloudinary error:', err);
       }
@@ -448,9 +436,6 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
       resource_type: 'video'
     });
     
-    const publicId = result.public_id;
-    await makePublic(publicId, 'video');
-    
     res.json({ url: result.secure_url });
   } catch (error) {
     console.error('Upload recording error:', error);
@@ -559,9 +544,6 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
       resource_type: 'video'
     });
     
-    const publicId = result.public_id;
-    await makePublic(publicId, 'video');
-    
     await sql`
       UPDATE tasks 
       SET voice_recording = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
@@ -581,18 +563,15 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
     }
     
     const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
-    const safePublicId = sanitizePublicId(req.file.originalname);
+    const cleanId = cleanFileName(req.file.originalname);
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_task_files',
       resource_type: resourceType,
-      public_id: safePublicId,
+      public_id: cleanId,
       use_filename: false,
       unique_filename: false
     });
-    
-    const publicId = result.public_id;
-    await makePublic(publicId, resourceType);
     
     await sql`
       UPDATE tasks 
@@ -606,7 +585,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN FILE UPLOAD - FIXED =============
+// ============= ADMIN FILE UPLOAD - THE FIX =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -614,24 +593,21 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     }
     
     const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
-    const safePublicId = sanitizePublicId(req.file.originalname);
+    const cleanId = cleanFileName(req.file.originalname);
     
-    console.log('Uploading file:', req.file.originalname);
-    console.log('Resource type:', resourceType);
+    console.log('📁 Uploading:', req.file.originalname);
+    console.log('📁 Resource type:', resourceType);
+    console.log('📁 Clean ID:', cleanId);
     
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: 'ailigner_admin_files',
       resource_type: resourceType,
-      public_id: safePublicId,
+      public_id: cleanId,
       use_filename: false,
       unique_filename: false
     });
     
-    // CRITICAL: Make the file public after upload
-    const publicId = result.public_id;
-    await makePublic(publicId, resourceType);
-    
-    console.log('Uploaded to:', result.secure_url);
+    console.log('✅ Uploaded to:', result.secure_url);
     
     await sql`
       UPDATE tasks SET file_url = ${result.secure_url}
@@ -890,7 +866,7 @@ app.post('/api/admin/send-money', authenticateToken, isAdmin, async (req, res) =
 const keepAlive = async () => {
   try {
     const response = await fetch(`http://localhost:${PORT}/api/jobs`);
-    console.log('Keep-alive ping:', new Date().toISOString(), 'Status:', response.status);
+    console.log('Keep-alive ping:', new Date().toISOString());
   } catch (err) {
     console.log('Keep-alive error:', err.message);
   }
@@ -901,5 +877,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary - Files made public after upload`);
+  console.log(`☁️ Cloudinary - PDFs as raw, full public access`);
 });
