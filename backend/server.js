@@ -53,7 +53,9 @@ const uploadToCloudinary = (buffer, options) => {
       {
         ...options,
         access_mode: 'public', // CRITICAL: Forces files to be publicly accessible
-        type: 'upload'
+        type: 'upload',
+        resource_type: 'auto',
+        folder: options.folder || 'ailigner_uploads'
       },
       (error, result) => {
         if (error) reject(error);
@@ -275,8 +277,7 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
     if (req.file) {
       try {
         const result = await uploadToCloudinary(req.file.buffer, {
-          folder: 'ailigner_passports',
-          resource_type: 'image'
+          folder: 'ailigner_passports'
         });
         passport_photo_url = result.secure_url;
       } catch (err) {
@@ -439,8 +440,7 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_exam_recordings',
-      resource_type: 'auto'
+      folder: 'ailigner_exam_recordings'
     });
     
     console.log('✅ Recording uploaded to Cloudinary:', result.secure_url);
@@ -550,8 +550,7 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_task_recordings',
-      resource_type: 'auto'
+      folder: 'ailigner_task_recordings'
     });
     
     await sql`
@@ -573,8 +572,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_task_files',
-      resource_type: 'auto'
+      folder: 'ailigner_task_files'
     });
     
     await sql`
@@ -597,8 +595,7 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
     }
     
     const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'ailigner_admin_files',
-      resource_type: 'auto'
+      folder: 'ailigner_admin_files'
     });
     
     await sql`
