@@ -41,15 +41,12 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ============= UPLOAD TO CLOUDINARY - RAW FOR PDFs =============
+// ============= UPLOAD TO CLOUDINARY AND MAKE PUBLIC =============
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         ...options,
-        access_mode: 'public',
-        type: 'upload',
-        discard_original_filename: false,
         resource_type: options.resource_type || 'auto'
       },
       (error, result) => {
@@ -59,6 +56,21 @@ const uploadToCloudinary = (buffer, options) => {
     );
     streamifier.createReadStream(buffer).pipe(uploadStream);
   });
+};
+
+// ============= MAKE FILE PUBLIC =============
+const makePublic = async (publicId, resourceType) => {
+  try {
+    const result = await cloudinary.api.update(publicId, {
+      access_mode: 'public',
+      resource_type: resourceType || 'image'
+    });
+    console.log('✅ Made public:', publicId);
+    return result;
+  } catch (error) {
+    console.log('⚠️ Error making public:', error.message);
+    return null;
+  }
 };
 
 const getResourceType = (filename, mimetype) => {
@@ -272,6 +284,10 @@ app.post('/api/signup', upload.single('passport_photo'), async (req, res) => {
           resource_type: 'image'
         });
         passport_photo_url = result.secure_url;
+        
+        // Make public after upload
+        const publicId = result.public_id;
+        await makePublic(publicId, 'image');
       } catch (err) {
         console.error('Cloudinary error:', err);
       }
@@ -432,7 +448,9 @@ app.post('/api/upload-recording', authenticateToken, upload.single('recording'),
       resource_type: 'video'
     });
     
-    console.log('Recording uploaded:', result.secure_url);
+    const publicId = result.public_id;
+    await makePublic(publicId, 'video');
+    
     res.json({ url: result.secure_url });
   } catch (error) {
     console.error('Upload recording error:', error);
@@ -541,6 +559,9 @@ app.post('/api/submit-task-voice/:id', authenticateToken, upload.single('recordi
       resource_type: 'video'
     });
     
+    const publicId = result.public_id;
+    await makePublic(publicId, 'video');
+    
     await sql`
       UPDATE tasks 
       SET voice_recording = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
@@ -570,6 +591,9 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
       unique_filename: false
     });
     
+    const publicId = result.public_id;
+    await makePublic(publicId, resourceType);
+    
     await sql`
       UPDATE tasks 
       SET user_file_url = ${result.secure_url}, status = 'submitted', updated_at = CURRENT_TIMESTAMP
@@ -582,7 +606,7 @@ app.post('/api/submit-task-file/:id', authenticateToken, upload.single('file'), 
   }
 });
 
-// ============= ADMIN FILE UPLOAD - PDF FIX =============
+// ============= ADMIN FILE UPLOAD - FIXED =============
 app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -602,6 +626,10 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
       use_filename: false,
       unique_filename: false
     });
+    
+    // CRITICAL: Make the file public after upload
+    const publicId = result.public_id;
+    await makePublic(publicId, resourceType);
     
     console.log('Uploaded to:', result.secure_url);
     
@@ -873,5 +901,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary: ALL uploads PUBLIC`);
+  console.log(`☁️ Cloudinary - Files made public after upload`);
 });
