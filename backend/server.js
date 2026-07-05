@@ -42,13 +42,15 @@ const upload = multer({
 });
 
 // ============= UPLOAD TO CLOUDINARY =============
+// CRITICAL: For PDFs, use resource_type: 'image' (not 'raw')
+// This makes access_mode: 'public' work on free tier
 const uploadToCloudinary = (buffer, options) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         ...options,
-        resource_type: options.resource_type || 'auto',
-        access_mode: 'public'
+        access_mode: 'public',
+        resource_type: options.resource_type || 'auto'
       },
       (error, result) => {
         if (error) reject(error);
@@ -63,10 +65,13 @@ const uploadToCloudinary = (buffer, options) => {
 const getResourceType = (filename, mimetype) => {
   const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
   const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
+  
   if (imageExts.includes(ext) || mimetype.startsWith('image/')) {
     return 'image';
   }
-  return 'raw';
+  
+  // PDFs are uploaded as 'image' to make public access work on free tier
+  return 'image'; // <-- THIS IS THE FIX
 };
 
 // ============= CLEAN FILENAME =============
@@ -592,7 +597,8 @@ app.post('/api/admin/task-file/:id', authenticateToken, isAdmin, upload.single('
       return res.status(400).json({ error: 'No file uploaded' });
     }
     
-    const resourceType = getResourceType(req.file.originalname, req.file.mimetype);
+    // CRITICAL FIX: PDFs uploaded as 'image' so public access works
+    const resourceType = 'image'; // Force all files to upload as image
     const cleanId = cleanFileName(req.file.originalname);
     
     console.log('📁 Uploading:', req.file.originalname);
@@ -877,5 +883,5 @@ setInterval(keepAlive, 240000);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔐 Admin: admin@ailigner.com / Admin123!`);
-  console.log(`☁️ Cloudinary - PDFs as raw, full public access`);
+  console.log(`☁️ Cloudinary - PDFs uploaded as image (public access works)`);
 });
